@@ -50,7 +50,7 @@ class OCRSpaceTester:
             with open(processed_image, 'rb') as f:
                 files = {'file': f}
                 data = {
-                    'apikey': 'helloworld',  # Free API key
+                    'apikey': 'K81765219388957',  # Free API key
                     'language': 'eng',
                     'detectOrientation': 'false',
                     'scale': 'true',
