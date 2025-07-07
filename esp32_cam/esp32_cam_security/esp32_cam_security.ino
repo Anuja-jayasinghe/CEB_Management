@@ -89,10 +89,8 @@ void setup() {
     return;
   }
   
-  // Check if it's time to take a photo
-  if (isWorkingHours()) {
-    takeScheduledPhoto();
-  }
+  // Take a picture immediately on boot
+  takeScheduledPhoto();
   
   // Setup web server routes
   server.on("/", HTTP_GET, handleRoot);
@@ -210,11 +208,12 @@ bool isWorkingHours() {
   }
   
   int current_hour = timeinfo.tm_hour;
-  return (current_hour >= WORK_START_HOUR && current_hour < WORK_END_HOUR);
+  // Working hours: 6 AM to 4 AM (next day)
+  return (current_hour >= 6 || current_hour < 4);
 }
 
 void takeScheduledPhoto() {
-  Serial.println("Taking scheduled photo...");
+  Serial.println("Taking photo...");
   
   camera_fb_t * fb = esp_camera_fb_get();
   if (!fb) {
@@ -312,15 +311,15 @@ void calculateSleepTime() {
   int current_hour = timeinfo.tm_hour;
   int sleep_seconds;
   
-  if (current_hour < WORK_START_HOUR) {
-    // Before work hours - sleep until work starts
-    sleep_seconds = (WORK_START_HOUR - current_hour) * 3600;
-  } else if (current_hour >= WORK_END_HOUR) {
-    // After work hours - sleep until next day work starts
-    sleep_seconds = (24 - current_hour + WORK_START_HOUR) * 3600;
-  } else {
-    // During work hours - sleep for interval
+  if (current_hour >= 4 && current_hour < 6) {
+    // Between 4 AM and 6 AM - sleep until 6 AM
+    sleep_seconds = (6 - current_hour) * 3600;
+  } else if (current_hour >= 6) {
+    // After 6 AM - sleep for interval
     sleep_seconds = PHOTO_INTERVAL * 3600;
+  } else {
+    // Before 4 AM (overnight) - sleep until 6 AM
+    sleep_seconds = (6 + (24 - current_hour)) * 3600;
   }
   
   goToSleep(sleep_seconds);
@@ -346,11 +345,13 @@ void handleRoot() {
   if (!server.authenticate("admin", DEVICE_PASSWORD)) {
     return server.requestAuthentication();
   }
-  String html = "<html><body>";
-  html += "<h1>ESP32-CAM Security System</h1>";
-  html += "<p><a href='/stream'>View Live Stream</a></p>";
-  html += "<p><a href='/logout'>Logout</a></p>";
-  html += "</body></html>";
+  String html = "<html><body style='margin:0;padding:0;background:#000;color:#fff;text-align:center;'>";
+  html += "<h1 style='margin-top:20px;'>ESP32-CAM Live Stream</h1>";
+  html += "<div style='margin:20px auto;width:640px;'>";
+  html += "<img src='/video_feed' width='640' height='480' style='display:block;'>";
+  html += "<div style='margin:10px;'>";
+  html += "<a href='/logout' style='color:#fff;background:#f00;padding:10px 20px;text-decoration:none;border-radius:5px;'>Stop Stream</a>";
+  html += "</div></div></body></html>";
   server.send(200, "text/html", html);
 }
 
@@ -370,20 +371,20 @@ void handleStream() {
   live_stream_active = true;
   live_stream_start_time = millis();
 
-  String html = "<html><body>";
-  html += "<h1>Live Stream</h1>";
-  html += "<img src='/video_feed' width='640' height='480'>";
-  html += "<p><a href='/logout'>Stop Stream & Logout</a></p>";
-  html += "</body></html>";
-  server.send(200, "text/html", html);
+  // Redirect to root which will show the stream
+  server.sendHeader("Location", "/");
+  server.send(303);
 }
 
 void handleVideoFeed() {
   WiFiClient client = server.client();
-  String response = "HTTP/1.1 200 OK\r\n";
-  response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
-  client.print(response);
-
+  
+  // Send headers
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  client.println("Connection: close");
+  client.println();
+  
   while (live_stream_active && client.connected()) {
     if (millis() - live_stream_start_time > LIVE_STREAM_TIMEOUT) {
       live_stream_active = false;
@@ -396,13 +397,15 @@ void handleVideoFeed() {
       continue;
     }
 
-    client.print("--frame\r\n");
-    client.print("Content-Type: image/jpeg\r\n\r\n");
+    client.println("--frame");
+    client.println("Content-Type: image/jpeg");
+    client.println("Content-Length: " + String(fb->len));
+    client.println();
     client.write(fb->buf, fb->len);
-    client.print("\r\n");
+    client.println();
 
     esp_camera_fb_return(fb);
-    delay(100); // ~10 fps
+    delay(33); // ~30 fps
   }
 
   // Put camera back to sleep if not during working hours
@@ -429,4 +432,3 @@ void handleLogout() {
   server.sendHeader("Location", "/");
   server.send(303);
 }
- 
