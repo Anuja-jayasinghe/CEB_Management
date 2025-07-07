@@ -388,7 +388,7 @@ void handleVideoFeed() {
     if (millis() - live_stream_start_time > LIVE_STREAM_TIMEOUT) {
       live_stream_active = false;
       break;
-    }
+    } 
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
