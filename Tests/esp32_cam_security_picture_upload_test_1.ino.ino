@@ -6,12 +6,13 @@
 
 // WiFi credentials
 const char* ssid = "Area_34";
-const char* password = "Tele@slt@4567";
+const char* ssid = "ssid";
+const char* password = "password";
 
 // GitHub Personal Access Token
-const char* githubToken = "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";
-const char* githubRepo = "Anuja-jayasinghe/CEB-photo-library";
-const char* githubFolder = "images";
+const char* githubToken = "Github_PAT";
+const char* githubRepo = "usename/reponame";
+const char* githubFolder = "folderName";
 
 // NTP Server config
 const char* ntpServer = "pool.ntp.org";
