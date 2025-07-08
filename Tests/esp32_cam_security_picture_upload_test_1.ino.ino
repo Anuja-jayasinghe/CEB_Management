@@ -5,7 +5,6 @@
 #include "time.h"
 
 // WiFi credentials
-const char* ssid = "Area_34";
 const char* ssid = "ssid";
 const char* password = "password";
 
