@@ -79,9 +79,15 @@ void setup() {
   Serial.print("WiFi connected! IP: ");
   Serial.println(WiFi.localIP());
   
-  // Initialize time
-  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-  
+  // Initialize time (critical for GitHub API)
+  configTime(0, 0, "pool.ntp.org");
+  time_t now = time(nullptr);
+  while (now < 24 * 3600) {
+    delay(500);
+    now = time(nullptr);
+  }
+  Serial.println("Time synced");
+
   // Initialize camera
   if (!initCamera()) {
     Serial.println("Camera init failed");
@@ -89,10 +95,8 @@ void setup() {
     return;
   }
   
-  // Check if it's time to take a photo
-  if (isWorkingHours()) {
-    takeScheduledPhoto();
-  }
+  // Take a picture immediately on boot
+  takeScheduledPhoto();
   
   // Setup web server routes
   server.on("/", HTTP_GET, handleRoot);
@@ -114,6 +118,7 @@ void loop() {
   // If live stream is active but client disconnected
   if (live_stream_active && !server.client().connected()) {
     live_stream_active = false;
+    Serial.println("Client disconnected, stopping stream");
 
     // Put camera back to sleep if not during working hours
     if (!isWorkingHours()) {
@@ -210,11 +215,12 @@ bool isWorkingHours() {
   }
   
   int current_hour = timeinfo.tm_hour;
-  return (current_hour >= WORK_START_HOUR && current_hour < WORK_END_HOUR);
+  // Working hours: 6 AM to 4 AM (next day)
+  return (current_hour >= 6 || current_hour < 4);
 }
 
 void takeScheduledPhoto() {
-  Serial.println("Taking scheduled photo...");
+  Serial.println("Taking photo...");
   
   camera_fb_t * fb = esp_camera_fb_get();
   if (!fb) {
@@ -250,51 +256,66 @@ bool uploadToGitHub(uint8_t* data, size_t len, const char* filename) {
     Serial.println("WiFi not connected, skipping upload");
     return false;
   }
+
+  Serial.println("\n=== GitHub Upload Debug ===");
+  Serial.printf("Free heap: %d bytes\n", ESP.getFreeHeap());
   
-  // Convert image to base64 (ensure no extra characters)
+  // Memory check
+  if (ESP.getFreeHeap() < 50000) {
+    Serial.println("Low memory - skipping upload");
+    return false;
+  }
+
+  // Base64 encode
   String base64Image = base64::encode(data, len);
-  base64Image.replace("\n", ""); // Remove newlines
-  
-  // Debug: Print first 50 chars of base64
-  Serial.print("Base64 start: ");
-  Serial.println(base64Image.substring(0, 50));
-  
-  // Create GitHub API URL
-  String url = "https://api.github.com/repos/" + String(GITHUB_OWNER) + "/" + 
-              String(GITHUB_REPO) + "/contents/images/" + String(filename);
-  
-  // Create JSON payload
-  DynamicJsonDocument doc(3072); // Increased size
-  doc["message"] = "Automated image upload";
+  base64Image.replace("\n", "");
+  Serial.printf("Image: %d bytes -> Base64: %d chars\n", len, base64Image.length());
+
+  // Create payload
+  DynamicJsonDocument doc(3072);
+  doc["message"] = "ESP32-CAM Upload";
   doc["content"] = base64Image;
   doc["branch"] = GITHUB_BRANCH;
-  
+
   String jsonString;
   serializeJson(doc, jsonString);
-  
-  // Debug output
-  Serial.println("JSON payload size: " + String(jsonString.length()));
-  
+  Serial.printf("JSON size: %d bytes\n", jsonString.length());
+
+  // Configure client
   WiFiClientSecure client;
-  client.setInsecure(); // Temporary for debugging
-  
+  client.setInsecure();
+  // client.setBufferSizes(4096, 4096); // Critical for large payloads
+
   HTTPClient http;
+  http.setReuse(true);
+  http.setTimeout(15000);
+
+  String url = "https://api.github.com/repos/" + String(GITHUB_OWNER) + 
+              "/" + String(GITHUB_REPO) + "/contents/images/" + String(filename);
+  
   if (!http.begin(client, url)) {
     Serial.println("HTTP begin failed");
     return false;
   }
-  
+
   http.addHeader("Authorization", "token " + String(GITHUB_TOKEN));
   http.addHeader("Content-Type", "application/json");
   http.addHeader("User-Agent", "ESP32-CAM");
+
+  // Send request
+  Serial.println("Uploading...");
+  int httpCode = http.PUT(jsonString);
   
-  int httpResponseCode = http.PUT(jsonString);
-  String response = http.getString();
-  
-  Serial.println("Response: " + response);
+  // Handle response
+  if (httpCode > 0) {
+    Serial.printf("HTTP Code: %d\n", httpCode);
+    Serial.println("Response: " + http.getString());
+  } else {
+    Serial.printf("HTTP Error: %s\n", http.errorToString(httpCode).c_str());
+  }
+
   http.end();
-  
-  return (httpResponseCode == 201);
+  return (httpCode == 201);
 }
 
 void calculateSleepTime() {
@@ -312,15 +333,15 @@ void calculateSleepTime() {
   int current_hour = timeinfo.tm_hour;
   int sleep_seconds;
   
-  if (current_hour < WORK_START_HOUR) {
-    // Before work hours - sleep until work starts
-    sleep_seconds = (WORK_START_HOUR - current_hour) * 3600;
-  } else if (current_hour >= WORK_END_HOUR) {
-    // After work hours - sleep until next day work starts
-    sleep_seconds = (24 - current_hour + WORK_START_HOUR) * 3600;
-  } else {
-    // During work hours - sleep for interval
+  if (current_hour >= 4 && current_hour < 6) {
+    // Between 4 AM and 6 AM - sleep until 6 AM
+    sleep_seconds = (6 - current_hour) * 3600;
+  } else if (current_hour >= 6) {
+    // After 6 AM - sleep for interval
     sleep_seconds = PHOTO_INTERVAL * 3600;
+  } else {
+    // Before 4 AM (overnight) - sleep until 6 AM
+    sleep_seconds = (6 + (24 - current_hour)) * 3600;
   }
   
   goToSleep(sleep_seconds);
@@ -346,11 +367,37 @@ void handleRoot() {
   if (!server.authenticate("admin", DEVICE_PASSWORD)) {
     return server.requestAuthentication();
   }
-  String html = "<html><body>";
-  html += "<h1>ESP32-CAM Security System</h1>";
-  html += "<p><a href='/stream'>View Live Stream</a></p>";
-  html += "<p><a href='/logout'>Logout</a></p>";
-  html += "</body></html>";
+  
+  String html = R"=====(
+<html>
+<head>
+  <title>ESP32-CAM Live Stream</title>
+  <style>
+    body { margin: 0; padding: 0; background: #000; color: #fff; text-align: center; }
+    .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+    .stream-container { position: relative; padding-bottom: 56.25%; }
+    #stream { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .controls { margin: 20px 0; }
+    .btn { 
+      background: #f00; color: #fff; padding: 10px 20px; 
+      text-decoration: none; border-radius: 5px; margin: 0 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESP32-CAM Live Stream</h1>
+    <div class="stream-container">
+      <img id="stream" src="/video_feed">
+    </div>
+    <div class="controls">
+      <a href="/logout" class="btn">Stop Stream & Logout</a>
+    </div>
+  </div>
+</body>
+</html>
+)=====";
+  
   server.send(200, "text/html", html);
 }
 
@@ -369,26 +416,39 @@ void handleStream() {
 
   live_stream_active = true;
   live_stream_start_time = millis();
+  Serial.println("Live stream started");
 
-  String html = "<html><body>";
-  html += "<h1>Live Stream</h1>";
-  html += "<img src='/video_feed' width='640' height='480'>";
-  html += "<p><a href='/logout'>Stop Stream & Logout</a></p>";
-  html += "</body></html>";
-  server.send(200, "text/html", html);
+  // Redirect to root which will show the stream
+  server.sendHeader("Location", "/");
+  server.send(303);
 }
 
 void handleVideoFeed() {
+  Serial.println("Starting video feed handler");
+  
   WiFiClient client = server.client();
-  String response = "HTTP/1.1 200 OK\r\n";
-  response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
-  client.print(response);
-
+  
+  // Send headers
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  client.println();
+  
+  unsigned long last_frame = 0;
+  const unsigned long frame_delay = 1000 / 15; // 15 FPS
+  
   while (live_stream_active && client.connected()) {
     if (millis() - live_stream_start_time > LIVE_STREAM_TIMEOUT) {
+      Serial.println("Stream timeout reached");
       live_stream_active = false;
       break;
-    } 
+    }
+    
+    unsigned long now = millis();
+    if (now - last_frame < frame_delay) {
+      delay(5);
+      continue;
+    }
+    last_frame = now;
 
     camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
@@ -396,15 +456,21 @@ void handleVideoFeed() {
       continue;
     }
 
-    client.print("--frame\r\n");
-    client.print("Content-Type: image/jpeg\r\n\r\n");
+    client.println("--frame");
+    client.println("Content-Type: image/jpeg");
+    client.println("Content-Length: " + String(fb->len));
+    client.println();
     client.write(fb->buf, fb->len);
-    client.print("\r\n");
+    client.println();
 
     esp_camera_fb_return(fb);
-    delay(100); // ~10 fps
+    
+    // Small delay to prevent watchdog triggers
+    delay(1);
   }
-
+  
+  Serial.println("Video feed handler ended");
+  
   // Put camera back to sleep if not during working hours
   if (!isWorkingHours()) {
     esp_camera_deinit();
@@ -428,5 +494,5 @@ void handleLogout() {
   live_stream_active = false;
   server.sendHeader("Location", "/");
   server.send(303);
+  Serial.println("User logged out, stream stopped");
 }
- 
