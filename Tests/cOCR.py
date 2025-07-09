@@ -201,7 +201,7 @@ if __name__ == "__main__":
     ocr = OptimizedMeterOCR()
     
     # Test with your image
-    image_file = "Test_1.jpg"
+    image_file = "pic3.jpg"
     expected = "15709"
     
     # Test the complete process
