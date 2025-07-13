@@ -22,18 +22,40 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 print(f"OCR Key loaded: {OCR_API_KEY[:4]}******")  # Optional
 OCR_API_URL = 'https://api.ocr.space/parse/image'
 
+# def preprocess_image(image_path):
+#     """Crops and lightly preprocesses the image"""
+#     img = cv2.imread(image_path)
+#     if img is None:
+#         return None
+
+#     height, width = img.shape[:2]
+#     # crop = img[int(height * 0.2):int(height * 0.6), int(width * 0.1):int(width * 0.9)]  #original crop
+#     # crop = img[int(height * 0.2):int(height * 0.4), int(width * 0.2):int(width * 0.9)] # works with setuptest3
+#     crop = img[int(height * 0.05):int(height * 0.3), int(width * 0.1):int(width * 0.7)] # works with setup 
+#     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+#     processed_path = os.path.join(UPLOAD_FOLDER, 'processed.jpg')
+#     cv2.imwrite(processed_path, gray)
+#     return processed_path
+
 def preprocess_image(image_path):
-    """Crops and lightly preprocesses the image"""
+    """Crops and preprocesses the image for better OCR"""
     img = cv2.imread(image_path)
     if img is None:
         return None
 
     height, width = img.shape[:2]
-    crop = img[int(height * 0.2):int(height * 0.6), int(width * 0.1):int(width * 0.9)]
+    crop = img[int(height * 0.05):int(height * 0.35), int(width * 0.05):int(width * 0.75)]  # wider crop
+
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    blur = cv2.bilateralFilter(gray, 9, 75, 75)
+    equalized = cv2.equalizeHist(blur)
+    thresh = cv2.adaptiveThreshold(equalized, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, 11, 2)
+
     processed_path = os.path.join(UPLOAD_FOLDER, 'processed.jpg')
-    cv2.imwrite(processed_path, gray)
+    cv2.imwrite(processed_path, thresh)
     return processed_path
+
 
 def extract_reading(ocr_text):
     """Extracts 5-digit number from OCR result"""
